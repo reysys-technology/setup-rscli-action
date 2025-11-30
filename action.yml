@@ -28,15 +28,12 @@ runs:
     - uses: actions/github-script@v8
       with:
         script: |
-          const exec = require('@actions/exec');
           const version = '${{ inputs.version }}' === 'latest' ? 'latest' : '${{ inputs.version }}';
           await exec.exec('go', ['install', `github.com/reysys-technology/rscli@v${version}`]);
     - id: rscli-version
       uses: actions/github-script@v8
       with:
         script: |
-          const exec = require('@actions/exec');
-          const core = require('@actions/core');
           let version = '';
           await exec.exec('rscli', ['--version'], {
             listeners: {
