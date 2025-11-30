@@ -29,8 +29,8 @@ runs:
       with:
         script: |
           const inputVersion = '${{ inputs.version }}';
-          const versionSpec = inputVersion === 'latest' ? 'latest' : `v${inputVersion}`;
-          await exec.exec('go', ['install', `github.com/reysys-technology/rscli@${versionSpec}`]);
+          const version = inputVersion === 'latest' ? 'latest' : `v${inputVersion}`;
+          await exec.exec('go', ['install', `github.com/reysys-technology/rscli/cmd/rscli@${version}`]);
     - id: rscli-version
       uses: actions/github-script@v8
       with:
