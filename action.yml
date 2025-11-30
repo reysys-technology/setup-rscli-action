@@ -44,5 +44,5 @@ runs:
               stderr: (data) => { version += data.toString(); }
             }
           });
-          core.setOutput('version', version.trim());
-          core.info(`rscli installed successfully: ${version.trim()}`);
+          core.setOutput('version', version);
+          core.info(`${version}`);
