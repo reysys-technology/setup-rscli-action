@@ -1,49 +1,175 @@
 name: Setup RSCLI
-description: Setup RSCLI tool for interacting with Reysys services
+description: Install the Reysys CLI and put it on PATH
 author: reysys-technology
 branding:
   color: green
   icon: cloud
+
 inputs:
   version:
-    description: Version of rscli to install (default is latest)
+    description: >-
+      Version of rscli to install, for example 1.2.2. Defaults to the current
+      stable release. Pin this: a gate whose verdict can change between builds
+      because the binary changed underneath is not a gate.
     required: false
     default: latest
+  download-host:
+    description: Host to download from. Change this only to use an internal mirror.
+    required: false
+    default: cli.reysys.com
   skip-go-install:
-    description: Skip Go installation (set to true if Go is already set up)
+    description: Deprecated and ignored. rscli is no longer installed with go install.
     required: false
-    default: 'false'
+    default: ''
   go-version:
-    description: Go version to install (ignored if skip-go-install is true)
+    description: Deprecated and ignored. rscli is a static binary and needs no Go toolchain.
     required: false
-    default: '1.24'
+    default: ''
+
 outputs:
   rscli-version:
     description: The installed version of rscli
-    value: ${{ steps.rscli-version.outputs.version }}
+    value: ${{ steps.install.outputs.version || steps.install-windows.outputs.version }}
+
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v6
-      if: inputs.skip-go-install != 'true'
-      with:
-        go-version: ${{ inputs.go-version }}
-    - uses: actions/github-script@v8
-      with:
-        script: |
-          const inputVersion = '${{ inputs.version }}';
-          const version = inputVersion === 'latest' ? 'latest' : `v${inputVersion}`;
-          await exec.exec('go', ['install', `github.com/reysys-technology/rscli/cmd/rscli@${version}`]);
-    - id: rscli-version
-      uses: actions/github-script@v8
-      with:
-        script: |
-          let version = '';
-          await exec.exec('rscli', ['--version'], {
-            listeners: {
-              stdout: (data) => { version += data.toString(); },
-              stderr: (data) => { version += data.toString(); }
-            }
-          });
-          core.setOutput('version', version);
-          core.info(`${version}`);
+    - name: Warn about deprecated inputs
+      if: inputs.skip-go-install != '' || inputs.go-version != ''
+      shell: bash
+      run: |
+        echo "::warning title=Deprecated input::skip-go-install and go-version are ignored. rscli is now a prebuilt static binary downloaded from ${{ inputs.download-host }}; no Go toolchain is involved. Remove these inputs."
+
+    - name: Install rscli
+      id: install
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        DOWNLOAD_HOST: ${{ inputs.download-host }}
+      run: |
+        set -euo pipefail
+
+        version="$INPUT_VERSION"
+        if [ -z "$version" ] || [ "$version" = "latest" ]; then
+          version="$(curl -fsSL --retry 3 "https://${DOWNLOAD_HOST}/rscli/stable.txt" | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "::error title=Cannot resolve version::https://${DOWNLOAD_HOST}/rscli/stable.txt returned nothing."
+            exit 1
+          fi
+          echo "::warning title=Unpinned version::Installed rscli ${version} from the stable pointer. Pin it with version: '${version}' so your pipeline does not change underneath you."
+        fi
+        version="${version#v}"
+
+        case "$(uname -s)" in
+          Linux)  operating_system=linux ;;
+          Darwin) operating_system=darwin ;;
+          *) echo "::error::Unsupported operating system $(uname -s)"; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64|amd64)  architecture=amd64 ;;
+          aarch64|arm64) architecture=arm64 ;;
+          *) echo "::error::Unsupported architecture $(uname -m)"; exit 1 ;;
+        esac
+
+        base="https://${DOWNLOAD_HOST}/rscli/${version}"
+        artifact="rscli_${operating_system}_${architecture}"
+
+        withdrawal_status=000
+        if raw="$(curl -sS -o /tmp/rscli-withdrawn -w '%{http_code}' --retry 3 "${base}/WITHDRAWN" 2>/dev/null)"; then
+          withdrawal_status="${raw: -3}"
+        fi
+        case "$withdrawal_status" in
+          404) ;;
+          200)
+            echo "::error title=Withdrawn release::rscli ${version} has been withdrawn and must not be installed."
+            sed 's/^/  /' /tmp/rscli-withdrawn
+            exit 1 ;;
+          *)
+            echo "::error title=Cannot verify release::${base}/WITHDRAWN returned '${withdrawal_status}'. Refusing to install rather than risk a withdrawn release."
+            exit 1 ;;
+        esac
+
+        install_dir="${RUNNER_TEMP}/rscli-bin"
+        mkdir -p "$install_dir"
+        cd "$install_dir"
+
+        curl -fsSL --retry 3 -o rscli "${base}/${artifact}"
+        curl -fsSL --retry 3 -o checksums.txt "${base}/checksums.txt"
+
+        expected="$(grep " ${artifact}\$" checksums.txt | awk '{print $1}')"
+        if [ -z "$expected" ]; then
+          echo "::error title=Checksum missing::${artifact} is not listed in checksums.txt"
+          exit 1
+        fi
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum rscli | awk '{print $1}')"
+        else
+          actual="$(shasum -a 256 rscli | awk '{print $1}')"
+        fi
+        if [ "$actual" != "$expected" ]; then
+          echo "::error title=Checksum mismatch::expected ${expected}, got ${actual}"
+          exit 1
+        fi
+
+        rm -f checksums.txt
+        chmod +x rscli
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "version=$(./rscli --version)" >> "$GITHUB_OUTPUT"
+        echo "Installed rscli ${version} to ${install_dir}"
+
+    - name: Install rscli (Windows)
+      id: install-windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        DOWNLOAD_HOST: ${{ inputs.download-host }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $version = $env:INPUT_VERSION
+        if ([string]::IsNullOrWhiteSpace($version) -or $version -eq 'latest') {
+          $version = (Invoke-WebRequest -Uri "https://$($env:DOWNLOAD_HOST)/rscli/stable.txt" -UseBasicParsing).Content.Trim()
+          Write-Output "::warning title=Unpinned version::Installed rscli $version from the stable pointer. Pin it with version: '$version'."
+        }
+        $version = $version.TrimStart('v')
+
+        $architecture = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+        $base = "https://$($env:DOWNLOAD_HOST)/rscli/$version"
+        $artifact = "rscli_windows_$architecture.exe"
+
+        try {
+          Invoke-WebRequest -Uri "$base/WITHDRAWN" -UseBasicParsing -OutFile "$env:RUNNER_TEMP\withdrawn.txt" | Out-Null
+          Write-Output "::error title=Withdrawn release::rscli $version has been withdrawn and must not be installed."
+          Get-Content "$env:RUNNER_TEMP\withdrawn.txt" | ForEach-Object { Write-Output "  $_" }
+          exit 1
+        } catch {
+          if ($_.Exception.Response.StatusCode.value__ -ne 404) {
+            Write-Output "::error title=Cannot verify release::$base/WITHDRAWN did not return 404. Refusing to install."
+            exit 1
+          }
+        }
+
+        $installDir = Join-Path $env:RUNNER_TEMP 'rscli-bin'
+        New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+        $binary = Join-Path $installDir 'rscli.exe'
+
+        Invoke-WebRequest -Uri "$base/$artifact" -UseBasicParsing -OutFile $binary
+        $checksums = (Invoke-WebRequest -Uri "$base/checksums.txt" -UseBasicParsing).Content
+
+        $expected = ($checksums -split "`n" | Where-Object { $_ -match "\s$([regex]::Escape($artifact))$" }) -split '\s+' | Select-Object -First 1
+        if (-not $expected) {
+          Write-Output "::error title=Checksum missing::$artifact is not listed in checksums.txt"
+          exit 1
+        }
+        $actual = (Get-FileHash -Path $binary -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected.ToLower()) {
+          Write-Output "::error title=Checksum mismatch::expected $expected, got $actual"
+          exit 1
+        }
+
+        Add-Content -Path $env:GITHUB_PATH -Value $installDir
+        $reported = & $binary --version
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$reported"
+        Write-Output "Installed rscli $version to $installDir"
