@@ -23,8 +23,6 @@ stable release and emits a warning telling you what to pin.
 |---|---|---|
 | `version` | `latest` | Version to install, for example `1.2.2`. `latest` resolves the current stable release. |
 | `download-host` | `cli.reysys.com` | Change only to use an internal mirror. |
-| `skip-go-install` | — | **Deprecated and ignored.** |
-| `go-version` | — | **Deprecated and ignored.** |
 
 ## Outputs
 
@@ -49,6 +47,8 @@ v1 ran `go install`. That no longer works: the Go module proxy cannot read a
 private repository, so it is permanently frozen at v1.2.1 and already fails for
 anyone setting `GOPRIVATE` or `GOPROXY=direct`, which is common in enterprise CI.
 
-Change `@v1` to `@v2` and delete `skip-go-install` and `go-version` if you set
-them. No Go toolchain is needed any more, so you can drop `actions/setup-go` too.
-Everything else is unchanged.
+Change `@v1` to `@v2` and **remove `skip-go-install` and `go-version`** if you set
+them — they no longer exist, and passing them produces an "Unexpected input(s)"
+warning. No Go toolchain is needed any more, so drop `actions/setup-go` too.
+
+The `version` input and the `rscli-version` output are unchanged.
