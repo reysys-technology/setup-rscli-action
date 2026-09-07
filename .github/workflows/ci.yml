@@ -1,0 +1,128 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check action.yml parses and declares the documented interface
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          action = yaml.safe_load(open('action.yml'))
+
+          expected_inputs = {'version', 'download-host'}
+          actual_inputs = set(action.get('inputs', {}))
+          if actual_inputs != expected_inputs:
+              print(f"inputs are {sorted(actual_inputs)}, expected {sorted(expected_inputs)}")
+              sys.exit(1)
+
+          if 'rscli-version' not in action.get('outputs', {}):
+              print("the rscli-version output is missing; removing it breaks every caller")
+              sys.exit(1)
+
+          steps = action['runs']['steps']
+          referenced = action['outputs']['rscli-version']['value']
+          for step in steps:
+              if step.get('id') and step['id'] not in referenced:
+                  print(f"step id {step['id']!r} is not referenced by the rscli-version output")
+                  sys.exit(1)
+
+          if action['runs']['using'] != 'composite':
+              print("action must stay a composite action")
+              sys.exit(1)
+
+          print(f"interface ok: inputs={sorted(actual_inputs)}, outputs={sorted(action['outputs'])}")
+          PY
+
+      - name: Shellcheck the embedded shell
+        run: |
+          python3 - <<'PY'
+          import yaml
+          action = yaml.safe_load(open('action.yml'))
+          for step in action['runs']['steps']:
+              if step.get('shell') == 'bash':
+                  name = step.get('id') or step.get('name', 'step')
+                  with open(f"/tmp/{name.replace(' ', '_')}.sh", 'w') as handle:
+                      handle.write("#!/usr/bin/env bash\n" + step['run'])
+                  print(f"extracted {name}")
+          PY
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # SC2086 is not applicable: these run under set -u with quoted expansions already
+          shellcheck --severity=warning /tmp/*.sh
+
+      - name: Refuse to reintroduce go install
+        run: |
+          if grep -qE '\bgo install\b' action.yml; then
+            echo "action.yml references 'go install'. The Go module proxy cannot read a private"
+            echo "repository, so that path is frozen and must not come back."
+            exit 1
+          fi
+          echo "no go install reference"
+
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is there a published release to test against?
+        id: published
+        shell: bash
+        run: |
+          if version="$(curl -fsSL --max-time 20 https://cli.reysys.com/rscli/stable.txt 2>/dev/null)"; then
+            echo "version=$(echo "$version" | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Smoke test skipped::No release published to cli.reysys.com yet, so there is nothing to install. This job becomes a real test once the first release lands."
+          fi
+
+      - name: Install rscli through the action
+        if: steps.published.outputs.available == 'true'
+        id: setup
+        uses: ./
+        with:
+          version: ${{ steps.published.outputs.version }}
+
+      - name: The binary must run and be on PATH
+        if: steps.published.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v rscli
+          rscli --version
+          reported='${{ steps.setup.outputs.rscli-version }}'
+          if [ -z "$reported" ]; then
+            echo "the rscli-version output was empty"
+            exit 1
+          fi
+          echo "output was: ${reported}"
+
+      - name: A withdrawn or missing version must be refused
+        if: steps.published.outputs.available == 'true'
+        shell: bash
+        run: |
+          if ./.github/scripts/expect-failure.sh; then
+            echo "correctly refused"
+          else
+            echo "the action installed a version that does not exist"
+            exit 1
+          fi
