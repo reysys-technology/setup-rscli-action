@@ -1,130 +1,54 @@
-# Setup RSCLI Action
+# setup-rscli-action
 
-A GitHub Action to install and set up [RSCLI](https://github.com/reysys-technology/rscli), a command-line tool for interacting with Reysys services.
-
-## Features
-
-- Installs RSCLI with a specified version or latest
-- Optionally sets up Go environment
-- Outputs the installed RSCLI version
-- Cross-platform support (Linux, macOS, Windows)
-
-## Usage
-
-### Basic Usage
+Installs the [Reysys CLI](https://cli.reysys.com) and puts it on `PATH`.
 
 ```yaml
-- name: Setup RSCLI
-  uses: reysys-technology/setup-rscli-action@v1
-```
-
-This will install the latest version of RSCLI with Go 1.24.
-
-### Specify RSCLI Version
-
-```yaml
-- name: Setup RSCLI
-  uses: reysys-technology/setup-rscli-action@v1
+- uses: reysys-technology/setup-rscli-action@v2
   with:
-    version: '1.0.3'
+    version: '1.2.2'
+
+- run: rscli trivy upload-trivy-container-image-scan -f report.json --gate
+  env:
+    RS_CLIENT_ID: ${{ secrets.RS_CLIENT_ID }}
+    RS_CLIENT_SECRET: ${{ secrets.RS_CLIENT_SECRET }}
 ```
 
-### Custom Go Version
-
-```yaml
-- name: Setup RSCLI
-  uses: reysys-technology/setup-rscli-action@v1
-  with:
-    version: 'latest'
-    go-version: '1.24'
-```
-
-### Skip Go Installation
-
-If Go is already set up in your workflow:
-
-```yaml
-- name: Setup Go
-  uses: actions/setup-go@v6
-  with:
-    go-version: '1.24'
-
-- name: Setup RSCLI
-  uses: reysys-technology/setup-rscli-action@v1
-  with:
-    skip-go-install: 'true'
-```
-
-### Using the Version Output
-
-```yaml
-- name: Setup RSCLI
-  id: setup-rscli
-  uses: reysys-technology/setup-rscli-action@v1
-
-- name: Display RSCLI Version
-  run: echo "Installed RSCLI version: ${{ steps.setup-rscli.outputs.rscli-version }}"
-```
+**Pin the version.** A gate whose verdict can change between builds because the
+binary changed underneath is not a gate. Omitting `version` installs the current
+stable release and emits a warning telling you what to pin.
 
 ## Inputs
 
-| Input | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `version` | Version of RSCLI to install | No | `latest` |
-| `skip-go-install` | Skip Go installation (set to `true` if Go is already set up) | No | `false` |
-| `go-version` | Go version to install (ignored if `skip-go-install` is `true`) | No | `1.24` |
+| Input | Default | Description |
+|---|---|---|
+| `version` | `latest` | Version to install, for example `1.2.2`. `latest` resolves the current stable release. |
+| `download-host` | `cli.reysys.com` | Change only to use an internal mirror. |
+| `skip-go-install` | — | **Deprecated and ignored.** |
+| `go-version` | — | **Deprecated and ignored.** |
 
 ## Outputs
 
 | Output | Description |
-|--------|-------------|
-| `rscli-version` | The installed version of RSCLI |
+|---|---|
+| `rscli-version` | The version string the installed binary reports. |
 
-## Examples
+## What it does
 
-### Complete Workflow Example
+Downloads the prebuilt binary for the runner's platform, verifies it against the
+published `checksums.txt`, and adds it to `PATH`. Linux, macOS and Windows on
+both amd64 and arm64.
 
-```yaml
-name: Deploy with RSCLI
+It refuses to install a release that has been withdrawn, and it **fails closed**:
+if it cannot determine whether a version is withdrawn — network partition, a
+blocked request — it stops rather than installing. A revocation check that fails
+open is defeated by a firewall rule.
 
-on:
-  push:
-    branches: [ main ]
+## Upgrading from v1
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+v1 ran `go install`. That no longer works: the Go module proxy cannot read a
+private repository, so it is permanently frozen at v1.2.1 and already fails for
+anyone setting `GOPRIVATE` or `GOPROXY=direct`, which is common in enterprise CI.
 
-      - name: Setup RSCLI
-        id: setup-rscli
-        uses: reysys-technology/setup-rscli-action@v1
-        with:
-          version: 'latest'
-
-      - name: Verify Installation
-        run: rscli --version
-
-      - name: Deploy Application
-        run: rscli deploy
-        env:
-          RS_SECRET_ID: ${{ secrets.RS_SECRET_ID }}
-          RS_SECRET: ${{ secrets.RS_SECRET }}
-          RS_BASE_URL: ${{ secrets.RS_BASE_URL }}
-```
-
-## Requirements
-
-- GitHub Actions runner (Linux, macOS, or Windows)
-- Go 1.24 or higher (installed automatically unless `skip-go-install` is `true`)
-
-## Support
-
-For issues and questions:
-- RSCLI Issues: [github.com/reysys-technology/rscli/issues](https://github.com/reysys-technology/rscli/issues)
-- Action Issues: [github.com/reysys-technology/setup-rscli-action/issues](https://github.com/reysys-technology/setup-rscli-action/issues)
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+Change `@v1` to `@v2` and delete `skip-go-install` and `go-version` if you set
+them. No Go toolchain is needed any more, so you can drop `actions/setup-go` too.
+Everything else is unchanged.
