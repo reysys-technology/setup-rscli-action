@@ -17,14 +17,6 @@ inputs:
     description: Host to download from. Change this only to use an internal mirror.
     required: false
     default: cli.reysys.com
-  skip-go-install:
-    description: Deprecated and ignored. rscli is no longer installed with go install.
-    required: false
-    default: ''
-  go-version:
-    description: Deprecated and ignored. rscli is a static binary and needs no Go toolchain.
-    required: false
-    default: ''
 
 outputs:
   rscli-version:
@@ -34,12 +26,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Warn about deprecated inputs
-      if: inputs.skip-go-install != '' || inputs.go-version != ''
-      shell: bash
-      run: |
-        echo "::warning title=Deprecated input::skip-go-install and go-version are ignored. rscli is now a prebuilt static binary downloaded from ${{ inputs.download-host }}; no Go toolchain is involved. Remove these inputs."
-
     - name: Install rscli
       id: install
       if: runner.os != 'Windows'
